@@ -125,3 +125,13 @@ def test_refuses_a_non_sandbox_host(http, paypal_creds, monkeypatch):
     with pytest.raises(RuntimeError, match="not the PayPal sandbox"):
         paypal_client.create_payout("vendor@example.com", 42.5, "USD", "note")
     assert http.calls == []
+
+
+def test_4xx_on_a_retry_is_reported_as_unknown_not_as_unpaid(http, paypal_creds):
+    """If the first attempt timed out, a later 4xx may be PayPal rejecting a
+    duplicate of a batch that did go through."""
+    http.paypal_ready()
+    http.on("POST", PAYOUT_URL, httpx.ReadTimeout("timed out"), (400, {"name": "USER_BUSINESS_ERROR"}))
+    with pytest.raises(paypal_client.PayoutOutcomeUnknown):
+        paypal_client.create_payout("vendor@example.com", 42.5, "USD", "note", sender_batch_id="np-fixed")
+    assert len(http.to(PAYOUT_URL)) == 2

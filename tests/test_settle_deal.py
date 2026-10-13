@@ -123,6 +123,22 @@ def test_sender_batch_id_is_stable_across_a_retry_after_an_unknown_outcome(http,
     assert all(call["headers"]["PayPal-Request-Id"] == first["sender_batch_id"] for call in http.to(PAYOUT_URL))
 
 
+def test_4xx_after_an_unknown_outcome_stays_unknown(http, paypal_creds, policy_path, log_path):
+    http.paypal_ready(payout_reply=httpx.ReadTimeout("timed out"))
+    assert settle(42.50, policy_path, log_path)["status"] == "payout_unknown"
+
+    # Same run: timeout, then PayPal refuses the retry.
+    http.on("POST", PAYOUT_URL, httpx.ReadTimeout("timed out"), (400, {"name": "USER_BUSINESS_ERROR"}))
+    assert settle(42.50, policy_path, log_path)["status"] == "payout_unknown"
+
+    # Later run: PayPal refuses the first attempt outright.
+    http.on("POST", PAYOUT_URL, (400, {"name": "USER_BUSINESS_ERROR"}))
+    assert settle(42.50, policy_path, log_path)["status"] == "payout_unknown"
+
+    statuses = [r["status"] for r in sa.DecisionLog(log_path).read() if r["type"] == "payout"]
+    assert statuses == ["unknown", "unknown", "unknown"]
+
+
 def test_paypal_client_error_is_recorded_as_a_definite_failure(http, paypal_creds, policy_path, log_path):
     http.paypal_ready(payout_reply=(422, {"name": "INSUFFICIENT_FUNDS"}))
     result = settle(42.50, policy_path, log_path)

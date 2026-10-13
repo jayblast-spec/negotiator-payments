@@ -13,7 +13,7 @@ An AI agent that negotiates a price and then pays the vendor is an agent holding
 ![PayPal Payouts](https://img.shields.io/badge/PayPal-Payouts_API-003087?style=flat-square&logo=paypal&logoColor=white)
 ![Groq](https://img.shields.io/badge/Groq-openai%2Fgpt--oss--20b-1D4ED8?style=flat-square)
 ![httpx](https://img.shields.io/badge/httpx-REST_client-1D4ED8?style=flat-square)
-![pytest](https://img.shields.io/badge/pytest-94_tests-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
+![pytest](https://img.shields.io/badge/pytest-96_tests-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
 
 ![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=700&size=18&pause=1200&color=1D4ED8&center=true&vCenter=true&width=760&lines=Negotiate.+Check+the+policy.+Then+pay.;Per-payment+cap.+Daily+cap.+Vendor+allowlist.;Above+the+threshold%2C+a+human+approves.;Every+decision+in+a+hash-chained+log.)
 
@@ -32,7 +32,7 @@ The model writes the memo and nothing else. The amount and the recipient come fr
 - **Aegis backend (when `AEGIS_AGENT_KEY` is set)**: after the local hard rules pass, the payment is sent to `POST /api/enforce` on [aegistrust.digital](https://aegistrust.digital) with the agent's key. `200` is allow, `202` is a hold for the account owner, `403` is deny. A held payment is polled at `GET /api/actions/:id`; once the owner approves, the single-use approval token is sent back with the identical request to release it. The agent key cannot approve its own payments; that takes the owner's key, which this code never reads. If Aegis is unreachable or answers anything undocumented, the payment is denied. The code does not drop back to the local approval rule in that case.
 - **`DecisionLog` in `spend_approval.py`**: append-only JSONL. Each record stores the previous record's SHA-256 and its own hash over the previous hash plus its canonical body. `python spend_approval.py verify` walks the chain. A log that does not verify also causes every new check to deny, because the 24-hour total can no longer be trusted.
 - **`settle_deal.py`** `settle_negotiated_deal()` calls the check, then `_draft_payout_memo()` (Groq; a plain template is used if `GROQ_API_KEY` is unset or the call fails), then `create_payout()`, and records the outcome as `sent`, `failed` (PayPal refused it, nothing was created) or `unknown` (no definite answer).
-- **`paypal_client.py`** `_get_access_token()` does the OAuth2 client-credentials exchange at `/v1/oauth2/token`; `create_payout()` posts to `/v1/payments/payouts`. The `sender_batch_id` is derived from the approved payment and reused on every retry, in the same process or a later run, following PayPal's guidance to retry a failed request with the same `sender_batch_id`. Timeouts and `5xx` are retried up to three times; `4xx` is not retried. The client refuses any host that is not the PayPal sandbox unless `PAYPAL_ALLOW_LIVE=1` is set.
+- **`paypal_client.py`** `_get_access_token()` does the OAuth2 client-credentials exchange at `/v1/oauth2/token`; `create_payout()` posts to `/v1/payments/payouts`. The `sender_batch_id` is derived from the approved payment and reused on every retry, in the same process or a later run, following PayPal's guidance to retry a failed request with the same `sender_batch_id`. Timeouts and `5xx` are retried up to three times; `4xx` is not retried. A `4xx` that arrives after an attempt with no definite answer is recorded as `unknown`, not `failed`, because it may be PayPal rejecting a duplicate of a batch that did go through. The client refuses any host that is not the PayPal sandbox unless `PAYPAL_ALLOW_LIVE=1` is set.
 - **`demo.py`** runs seven steps end to end against a temporary policy and log: a small allowed deal; a deal over the cap; a payee swap; a held deal that a human approves, followed by an attempt to settle it a second time; a deal that would break the daily cap; a check that cannot run; and a tamper test on the log.
 
 ```mermaid
@@ -55,7 +55,7 @@ Python 3.10 or newer (developed and tested on 3.12).
 ```bash
 pip install -r requirements-dev.txt
 python demo.py            # full flow as a dry run: no keys needed, nothing sent to PayPal
-python -m pytest          # 94 tests, httpx mocked, no network
+python -m pytest          # 96 tests, httpx mocked, no network
 ```
 
 With `PAYPAL_CLIENT_ID` unset, `demo.py` prints `DRY RUN` at the top, makes every decision for real, shows the exact request body it would post to PayPal, and sends nothing.
@@ -83,14 +83,14 @@ Edit `spend_policy.json` to change the caps, the approval threshold and the vend
 
 Run on this branch (2026-10-13):
 
-- `python -m pytest`: 94 tests pass. They replace `httpx` with a scripted fake, so they prove request shapes and control flow, not PayPal's or Aegis's real behaviour.
+- `python -m pytest`: 96 tests pass. They replace `httpx` with a scripted fake, so they prove request shapes and control flow, not PayPal's or Aegis's real behaviour.
 - `python demo.py` as a dry run, end to end, with zero requests to PayPal.
 - The Groq memo call, with a real key, during that dry run. It returned memos.
 - Unauthenticated requests to `https://aegistrust.digital/api/enforce` and to the PayPal sandbox API, which returned `401` as expected.
 
 Not run:
 
-- **No authenticated request has been sent to the PayPal sandbox.** The token exchange and the Payouts call are written from PayPal's documentation and have not been exercised with credentials. No sandbox payout has been made.
+- **No authenticated request has been sent to the PayPal sandbox.** The token exchange and the Payouts call are written from PayPal's documentation and have not been exercised with credentials. No sandbox payout has been made. In particular, how PayPal answers a repeated `sender_batch_id` has not been observed.
 - The Aegis backend has not been run with a real agent key. The JSON shape read from `GET /api/actions/:id` (`status`, `approvalToken`) is taken from the prose of the Aegis API reference.
 - Nothing in this repo is wired into AI-NEGOTIATOR's deployed app. `settle_negotiated_deal()` takes the agreed terms as arguments.
 

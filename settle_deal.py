@@ -164,8 +164,11 @@ def settle_negotiated_deal(
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code
         # 4xx: PayPal refused the request, so nothing was created. 5xx after
-        # retries: PayPal may or may not have created the batch.
-        definite = 400 <= code < 500
+        # retries: PayPal may or may not have created the batch. A 4xx for a
+        # deal whose earlier attempt had an unknown outcome may be PayPal
+        # rejecting a duplicate of a batch that did go through, so it is not
+        # treated as proof that nothing was paid.
+        definite = 400 <= code < 500 and not _earlier_outcome_unknown(intent, log_path)
         result["status"] = "payout_failed" if definite else "payout_unknown"
         result["error"] = f"PayPal answered HTTP {code}"
         _record(result, intent, "failed" if definite else "unknown", log_path, detail=result["error"])
@@ -188,6 +191,19 @@ def settle_negotiated_deal(
     batch_id = batch_header.get("payout_batch_id") if isinstance(batch_header, dict) else None
     _record(result, intent, "sent", log_path, payout_batch_id=batch_id)
     return result
+
+
+def _earlier_outcome_unknown(intent: "spend_approval.PaymentIntent", log_path: str | None) -> bool:
+    try:
+        records = spend_approval.DecisionLog(log_path).read()
+    except Exception:
+        return True  # cannot tell, so assume the cautious answer
+    return any(
+        record.get("type") == "payout"
+        and record.get("intent_hash") == intent.intent_hash
+        and record.get("status") == "unknown"
+        for record in records
+    )
 
 
 def _record(result: dict, intent: "spend_approval.PaymentIntent", status: str, log_path: str | None, **fields) -> None:

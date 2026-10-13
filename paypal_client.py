@@ -33,6 +33,15 @@ _RETRY_BACKOFF_SECONDS = (0.5, 1.5)
 _sleep = time.sleep
 
 
+class PayoutOutcomeUnknown(Exception):
+    """PayPal gave no definite answer about whether the payout batch exists.
+
+    Raised when a retry is refused with a 4xx after an earlier attempt timed
+    out or hit a 5xx: the refusal may mean the first attempt went through
+    (a duplicate sender_batch_id), so the payout must not be assumed unpaid.
+    """
+
+
 def _assert_sandbox(base_url: str) -> None:
     """This project moves money on an agent's say-so, so it refuses to talk to
     live PayPal unless a human opts in explicitly."""
@@ -114,6 +123,7 @@ def create_payout(
     }
 
     attempts = max(1, max_attempts)
+    earlier_attempt_unresolved = False
     for attempt in range(1, attempts + 1):
         last_attempt = attempt == attempts
         try:
@@ -128,10 +138,17 @@ def create_payout(
             # same sender_batch_id is the documented safe path.
             if last_attempt:
                 raise
+            earlier_attempt_unresolved = True
         else:
+            if 400 <= response.status_code < 500 and earlier_attempt_unresolved:
+                raise PayoutOutcomeUnknown(
+                    f"PayPal answered HTTP {response.status_code} to a retry of batch {batch_id}; "
+                    "an earlier attempt may have created it"
+                )
             if response.status_code < 500 or last_attempt:
                 response.raise_for_status()
                 return response.json()
+            earlier_attempt_unresolved = True
         _sleep(_RETRY_BACKOFF_SECONDS[min(attempt - 1, len(_RETRY_BACKOFF_SECONDS) - 1)])
 
     raise RuntimeError("unreachable: payout retry loop exited without a result")

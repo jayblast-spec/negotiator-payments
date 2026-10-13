@@ -87,10 +87,12 @@ Run on this branch (2026-10-13):
 - `python demo.py` as a dry run, end to end, with zero requests to PayPal.
 - The Groq memo call, with a real key, during that dry run. It returned memos.
 - Unauthenticated requests to `https://aegistrust.digital/api/enforce` and to the PayPal sandbox API, which returned `401` as expected.
+- `python demo.py` against the **PayPal sandbox** with a sandbox REST app (Payouts enabled) and a sandbox personal account as the recipient. The two allowed payments were sent as real sandbox payouts: batch `VK7JTVGR6A6RG` ($42.50) and batch `VE5WAX62ZRMV2` ($250.00, after the approval step). `GET /v1/payments/payouts/{batch_id}` returned `batch_status: SUCCESS` and item `transaction_status: SUCCESS` for both. The five refused payments made zero requests to PayPal; the run made four requests in total (two token exchanges, two payouts).
 
 Not run:
 
-- **No authenticated request has been sent to the PayPal sandbox.** The token exchange and the Payouts call are written from PayPal's documentation and have not been exercised with credentials. No sandbox payout has been made. In particular, how PayPal answers a repeated `sender_batch_id` has not been observed.
+- How PayPal answers a repeated `sender_batch_id` has not been observed. The sandbox run above sent each batch once.
+- Nothing has been run against PayPal's live (production) API. `paypal_client.py` refuses non-sandbox hosts unless `PAYPAL_ALLOW_LIVE=1`.
 - The Aegis backend has not been run with a real agent key. The JSON shape read from `GET /api/actions/:id` (`status`, `approvalToken`) is taken from the prose of the Aegis API reference.
 - Nothing in this repo is wired into AI-NEGOTIATOR's deployed app. `settle_negotiated_deal()` takes the agreed terms as arguments.
 

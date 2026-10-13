@@ -1,0 +1,11 @@
+{
+  "currency": "USD",
+  "per_payment_cap": "500.00",
+  "daily_cap": "600.00",
+  "approval_threshold": "100.00",
+  "approval_ttl_seconds": 900,
+  "vendor_allowlist": [
+    { "vendor": "Example Vendor Co", "paypal_email": "vendor@example.com" },
+    { "vendor": "Northside Packaging", "paypal_email": "ap@northside-packaging.example" }
+  ]
+}

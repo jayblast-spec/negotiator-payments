@@ -13,11 +13,19 @@ An AI agent that negotiates a price and then pays the vendor is an agent holding
 ![PayPal Payouts](https://img.shields.io/badge/PayPal-Payouts_API-003087?style=flat-square&logo=paypal&logoColor=white)
 ![Groq](https://img.shields.io/badge/Groq-openai%2Fgpt--oss--20b-1D4ED8?style=flat-square)
 ![httpx](https://img.shields.io/badge/httpx-REST_client-1D4ED8?style=flat-square)
-![pytest](https://img.shields.io/badge/pytest-96_tests-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
+![pytest](https://img.shields.io/badge/pytest-111_tests-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
 
 ![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=700&size=18&pause=1200&color=1D4ED8&center=true&vCenter=true&width=760&lines=Negotiate.+Check+the+policy.+Then+pay.;Per-payment+cap.+Daily+cap.+Vendor+allowlist.;Above+the+threshold%2C+a+human+approves.;Every+decision+in+a+hash-chained+log.)
 
 </div>
+
+## Why This Exists
+
+I run ArkNet Digital from Lagos. My live app, [AI Negotiator](https://ainegotiator.digital), finds the cheapest offers for what you want to buy and writes the script to haggle the price down. Then it stops, and you still have to go and pay.
+
+Picture the next step. A small business owner tells her agent: "Get me 500 rolls of packaging tape and 2,000 corner protectors, best price." The agent negotiates both, and now it needs to pay. That is the moment to worry: an agent that can pay is an agent holding her wallet. One vendor email swapped in a message thread, one retry loop that fires twice, or one deal agreed at ten times the budget, and the money is gone before she looks.
+
+This repo lets the agent pay through PayPal, while making sure the agent is never the one who decides that a payment is allowed.
 
 ## What It Does
 
@@ -29,7 +37,7 @@ The model writes the memo and nothing else. The amount and the recipient come fr
 
 - **`spend_approval.py`** `authorize_payment()` runs the check and never raises: any exception inside it becomes a `deny` with `failed_closed: true`. Order of rules: (1) a deal with a payout already on record is refused; (2) hard rules from `spend_policy.json`: policy currency, vendor allowlist (vendor name and the PayPal email on file must both match, which catches a swapped payee), per-payment cap, rolling 24-hour cap; (3) the approval rule from the active backend.
 - **Local backend (default, no key needed)**: amounts above `approval_threshold` return `needs_approval` with a `pending_id`. A person runs `python spend_approval.py approve <pending_id>`; the next call for the same payment is allowed once. Requests expire after `approval_ttl_seconds` (15 minutes by default), and so does an unused approval.
-- **Aegis backend (when `AEGIS_AGENT_KEY` is set)**: after the local hard rules pass, the payment is sent to `POST /api/enforce` on [aegistrust.digital](https://aegistrust.digital) with the agent's key. `200` is allow, `202` is a hold for the account owner, `403` is deny. A held payment is polled at `GET /api/actions/:id`; once the owner approves, the single-use approval token is sent back with the identical request to release it. The agent key cannot approve its own payments; that takes the owner's key, which this code never reads. If Aegis is unreachable or answers anything undocumented, the payment is denied. The code does not drop back to the local approval rule in that case.
+- **Aegis backend (when `AEGIS_AGENT_KEY` is set)**: after the local hard rules pass, the payment is sent to `POST /api/enforce` on the Aegis enforcement API (`AEGIS_BASE_URL`) with the agent's key. The hosted Aegis service is currently offline, so this mode is optional and experimental; the local backend is what the demo and the approval page use. `200` is allow, `202` is a hold for the account owner, `403` is deny. A held payment is polled at `GET /api/actions/:id`; once the owner approves, the single-use approval token is sent back with the identical request to release it. The agent key cannot approve its own payments; that takes the owner's key, which this code never reads. If Aegis is unreachable or answers anything undocumented, the payment is denied. The code does not drop back to the local approval rule in that case.
 - **`DecisionLog` in `spend_approval.py`**: append-only JSONL. Each record stores the previous record's SHA-256 and its own hash over the previous hash plus its canonical body. `python spend_approval.py verify` walks the chain. A log that does not verify also causes every new check to deny, because the 24-hour total can no longer be trusted.
 - **`settle_deal.py`** `settle_negotiated_deal()` calls the check, then `_draft_payout_memo()` (Groq; a plain template is used if `GROQ_API_KEY` is unset or the call fails), then `create_payout()`, and records the outcome as `sent`, `failed` (PayPal refused it, nothing was created) or `unknown` (no definite answer).
 - **`paypal_client.py`** `_get_access_token()` does the OAuth2 client-credentials exchange at `/v1/oauth2/token`; `create_payout()` posts to `/v1/payments/payouts`. The `sender_batch_id` is derived from the approved payment and reused on every retry, in the same process or a later run, following PayPal's guidance to retry a failed request with the same `sender_batch_id`. Timeouts and `5xx` are retried up to three times; `4xx` is not retried. A `4xx` that arrives after an attempt with no definite answer is recorded as `unknown`, not `failed`, because it may be PayPal rejecting a duplicate of a batch that did go through. The client refuses any host that is not the PayPal sandbox unless `PAYPAL_ALLOW_LIVE=1` is set.
@@ -55,7 +63,8 @@ Python 3.10 or newer (developed and tested on 3.12).
 ```bash
 pip install -r requirements-dev.txt
 python demo.py            # full flow as a dry run: no keys needed, nothing sent to PayPal
-python -m pytest          # 96 tests, httpx mocked, no network
+python -m pytest          # 111 tests, httpx mocked, no network
+python approval_ui.py     # local approval page, DRY RUN, http://127.0.0.1:8765
 ```
 
 With `PAYPAL_CLIENT_ID` unset, `demo.py` prints `DRY RUN` at the top, makes every decision for real, shows the exact request body it would post to PayPal, and sends nothing.
@@ -79,14 +88,32 @@ python spend_approval.py verify     # check the decision log's hash chain
 
 Edit `spend_policy.json` to change the caps, the approval threshold and the vendor allowlist.
 
+## Approval Page (DRY RUN)
+
+A local web page over `spend_approval.py`, so the human side of the check is a screen instead of a terminal command. Standard library only, nothing extra to install.
+
+```bash
+python approval_ui.py            # open http://127.0.0.1:8765
+python approval_ui.py --port 9000 --log /tmp/demo-decisions.jsonl
+```
+
+- **The agent proposes a payment**: preset negotiated deals, in demo order (a small allowed one, one over the cap, a payee swap, one above the approval threshold, one that breaks the daily cap) or a custom deal. Each goes through `settle_negotiated_deal()`.
+- **Waiting for a human**: the pending-approval queue. **Approve** records your name in the log, then the agent retries that exact payment once. **Refuse** records a human no.
+- **Decision log**: every record, newest first, with a live hash-chain check. If the log stops verifying, the page says TAMPERED and every new payment is refused.
+
+Shipping boxes is the daily-cap case. It is refused only after packaging tape has been paid and corner protectors have been approved (42.50 + 250.00 + 320.00 is over the 600.00 cap). The policy card shows how much of that cap is already used. Clicking shipping boxes earlier holds it for approval, and the page says why.
+
+Every settlement from this page is forced to `dry_run=True`, whatever is in your environment: the decisions, the approval step and the log are real, and nothing is sent to PayPal. The page binds to `127.0.0.1` only, every form carries a per-process token, and by default it uses a fresh temporary log and a copy of `spend_policy.json`, so it never touches your real log. Passing `--log` writes into that file, and the dry-run retry uses up the approval, so point it at a copy when the log still has a payment you mean to send.
+
 ## What Has And Has Not Been Run
 
 Run on this branch (2026-10-13):
 
-- `python -m pytest`: 96 tests pass. They replace `httpx` with a scripted fake, so they prove request shapes and control flow, not PayPal's or Aegis's real behaviour.
-- `python demo.py` as a dry run, end to end, with zero requests to PayPal.
+- `python -m pytest`: 111 tests pass on 2026-11-10 (96 before the approval page). They replace `httpx` with a scripted fake, so they prove request shapes and control flow, not PayPal's or Aegis's real behaviour.
+- `python demo.py --dry-run`, end to end, with zero requests to PayPal.
+- The local approval page in a browser (2026-11-10): packaging tape paid as a dry run, the machine and the payee swap refused, corner protectors approved by name and paid once, then shipping boxes refused because 292.50 of the 600.00 daily cap was already used. The hash chain verified. Nothing was sent to PayPal.
 - The Groq memo call, with a real key, during that dry run. It returned memos.
-- Unauthenticated requests to `https://aegistrust.digital/api/enforce` and to the PayPal sandbox API, which returned `401` as expected.
+- Unauthenticated requests to the Aegis enforcement API and to the PayPal sandbox API, which returned `401` as expected (2026-10-13). The hosted Aegis service is offline as of 2026-11-10.
 - `python demo.py` against the **PayPal sandbox** with a sandbox REST app (Payouts enabled) and a sandbox personal account as the recipient. The two allowed payments were sent as real sandbox payouts: batch `VK7JTVGR6A6RG` ($42.50) and batch `VE5WAX62ZRMV2` ($250.00, after the approval step). `GET /v1/payments/payouts/{batch_id}` returned `batch_status: SUCCESS` and item `transaction_status: SUCCESS` for both. The five refused payments made zero requests to PayPal; the run made four requests in total (two token exchanges, two payouts).
 
 Not run:
@@ -106,7 +133,7 @@ Not run:
 
 ## Live
 
-There is no hosted demo for this repo: it is a library and a command-line demo, run with the instructions above. The negotiation product it settles for is live at [ainegotiator.digital](https://ainegotiator.digital).
+There is no hosted demo for this repo: it is a library, a command-line demo and a local approval page (`python approval_ui.py`), run with the instructions above. The negotiation product it settles for is live at [ainegotiator.digital](https://ainegotiator.digital).
 
 ## Tech Stack
 
@@ -114,7 +141,7 @@ There is no hosted demo for this repo: it is a library and a command-line demo, 
 |---|---|
 | Payments | PayPal REST API: OAuth2 client credentials, Payouts (`/v1/payments/payouts`), sandbox |
 | AI | Groq, `openai/gpt-oss-20b`, drafts the payout memo |
-| Spend control | `spend_approval.py`: local policy file, optional [Aegis](https://aegistrust.digital) enforcement API |
+| Spend control | `spend_approval.py`: local policy file, optional Aegis enforcement API (experimental, hosted service currently offline) |
 | Audit | Hash-chained JSONL decision log (SHA-256) |
 | HTTP | `httpx` |
 | Tests | `pytest`, `httpx` replaced by a scripted fake |
@@ -126,6 +153,6 @@ Apache 2.0. See [LICENSE](./LICENSE).
 
 <div align="center">
 
-![Footer](https://capsule-render.vercel.app/api?type=waving&color=0:1D4ED8,55:0B1E3D,100:020617&height=120&section=footer&text=ArkNet%20Digital&fontSize=28&fontColor=ffffff&desc=michael@arknet.digital&descSize=14&descAlignY=75)
+![Footer](https://capsule-render.vercel.app/api?type=waving&color=0:1D4ED8,55:0B1E3D,100:020617&height=120&section=footer&text=ArkNet%20Digital&fontSize=28&fontColor=ffffff)
 
 </div>
